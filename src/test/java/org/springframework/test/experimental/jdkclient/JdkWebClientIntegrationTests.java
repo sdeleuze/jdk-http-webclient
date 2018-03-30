@@ -16,6 +16,8 @@ import org.hamcrest.CoreMatchers;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
+import org.junit.runner.RunWith;
+import org.junit.runners.Parameterized;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.test.StepVerifier;
@@ -31,6 +33,8 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.client.reactive.ClientHttpConnector;
+import org.springframework.http.client.reactive.ReactorClientHttpConnector;
 import org.springframework.web.reactive.function.client.ClientRequest;
 import org.springframework.web.reactive.function.client.ClientResponse;
 import org.springframework.web.reactive.function.client.ExchangeFilterFunction;
@@ -42,9 +46,21 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertThat;
 import static org.junit.Assert.assertTrue;
 
+@RunWith(Parameterized.class)
 public class JdkWebClientIntegrationTests {
 
 	private MockWebServer server;
+
+	@Parameterized.Parameter(0)
+	public ClientHttpConnector connector;
+
+	@Parameterized.Parameters(name = "client [{0}]")
+	public static Object[][] arguments() {
+		return new Object[][] {
+				{new JdkClientHttpConnector()},
+				{new ReactorClientHttpConnector()}
+		};
+	}
 
 	private WebClient webClient;
 
@@ -53,7 +69,7 @@ public class JdkWebClientIntegrationTests {
 		this.server = new MockWebServer();
 		this.webClient = WebClient
 				.builder()
-				.clientConnector(new JdkClientHttpConnector())
+				.clientConnector(this.connector)
 				.baseUrl(this.server.url("/").toString())
 				.build();
 	}
