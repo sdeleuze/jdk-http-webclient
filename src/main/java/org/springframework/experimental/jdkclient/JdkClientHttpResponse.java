@@ -1,10 +1,17 @@
 package org.springframework.experimental.jdkclient;
 
+import java.nio.ByteBuffer;
+import java.util.List;
+
 import jdk.incubator.http.HttpClient;
 import jdk.incubator.http.HttpResponse;
+import org.reactivestreams.Publisher;
 import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
 
 import org.springframework.core.io.buffer.DataBuffer;
+import org.springframework.core.io.buffer.DataBufferFactory;
+import org.springframework.core.io.buffer.DefaultDataBufferFactory;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseCookie;
@@ -22,15 +29,16 @@ import org.springframework.util.MultiValueMap;
  */
 public class JdkClientHttpResponse implements ClientHttpResponse {
 
-	private final HttpResponse<?> httpResponse;
+	private final HttpResponse<Publisher<List<ByteBuffer>>> httpResponse;
 
 	private final Flux<DataBuffer> content;
 
-	public JdkClientHttpResponse(HttpResponse<?> httpResponse, Flux<DataBuffer> content) {
+	private final DataBufferFactory factory = new DefaultDataBufferFactory();
+
+	public JdkClientHttpResponse(HttpResponse<Publisher<List<ByteBuffer>>> httpResponse) {
 		Assert.notNull(httpResponse, "HttpResponse should not be null");
-		Assert.notNull(content, "Content should not be null");
 		this.httpResponse = httpResponse;
-		this.content = content;
+		this.content = Flux.from(httpResponse.body()).flatMap(list -> Flux.fromIterable(list)).map(this.factory::wrap);
 	}
 
 	@Override
@@ -56,7 +64,7 @@ public class JdkClientHttpResponse implements ClientHttpResponse {
 
 	@Override
 	public Flux<DataBuffer> getBody() {
-		return this.content;
+		return this.content.doOnSubscribe(s -> System.out.println("Toto"));
 	}
 
 	@Override

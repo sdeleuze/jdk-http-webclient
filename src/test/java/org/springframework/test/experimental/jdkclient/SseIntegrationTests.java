@@ -16,14 +16,22 @@
 
 package org.springframework.test.experimental.jdkclient;
 
+import java.io.IOException;
+import java.net.URI;
 import java.time.Duration;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
 
+import jdk.incubator.http.HttpClient;
+import jdk.incubator.http.HttpRequest;
+import jdk.incubator.http.HttpResponse;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Ignore;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.Parameterized;
+import reactor.core.publisher.Mono;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.MonoProcessor;
 import reactor.test.StepVerifier;
@@ -43,6 +51,7 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.reactive.DispatcherHandler;
 import org.springframework.web.reactive.config.EnableWebFlux;
+import org.springframework.web.reactive.function.client.ClientResponse;
 import org.springframework.web.reactive.function.client.WebClient;
 import org.springframework.web.server.adapter.WebHttpHandlerBuilder;
 
@@ -318,7 +327,7 @@ public class SseIntegrationTests {
 	 * </ul>
 	 */
 	public static Flux<Long> interval(Duration period, int count) {
-		return Flux.interval(period).take(count).onBackpressureBuffer(count);
+		return Flux.interval(period).take(count);
 	}
 
 }
