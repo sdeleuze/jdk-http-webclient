@@ -1,21 +1,19 @@
 package org.springframework.experimental.jdkclient;
 
-import java.io.IOException;
 import java.net.URI;
 import java.nio.ByteBuffer;
 import java.util.Collection;
 import java.util.List;
-import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.Flow;
-import java.util.concurrent.atomic.AtomicReference;
 
 import jdk.incubator.http.HttpClient;
 import jdk.incubator.http.HttpRequest;
 import jdk.incubator.http.HttpResponse;
 import org.reactivestreams.Publisher;
-import reactor.adapter.JdkFlowAdapter;
+import org.reactivestreams.Subscription;
+import reactor.core.publisher.EmitterProcessor;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
@@ -43,7 +41,7 @@ import static jdk.incubator.http.HttpRequest.newBuilder;
  */
 public class JdkClientHttpRequest extends AbstractClientHttpRequest {
 
-	private final HttpClient httpClient = HttpClient.newHttpClient();
+	private final HttpClient httpClient;
 
 	private final ReactiveAdapter flowAdapter = ReactiveAdapterRegistry.getSharedInstance().getAdapter(Flow.Publisher.class);
 
@@ -56,13 +54,14 @@ public class JdkClientHttpRequest extends AbstractClientHttpRequest {
 	private Mono<ClientHttpResponse> response;
 
 
-	public JdkClientHttpRequest(HttpMethod httpMethod, URI uri) {
+	public JdkClientHttpRequest(HttpClient httpClient, HttpMethod httpMethod, URI uri) {
+		Assert.notNull(httpClient, "HttpClient should not be null");
 		Assert.notNull(httpMethod, "HttpMethod should not be null");
 		Assert.notNull(uri, "URI should not be null");
+		this.httpClient = httpClient;
 		this.uri = uri;
 		this.httpMethod = httpMethod;
-		// TODO HTTP/2 support
-		this.builder = newBuilder(uri).version(HttpClient.Version.HTTP_1_1);
+		this.builder = newBuilder(uri);
 	}
 
 	@Override
@@ -100,7 +99,7 @@ public class JdkClientHttpRequest extends AbstractClientHttpRequest {
 		return doCommit(() -> {
 			Flow.Publisher<ByteBuffer> publisher = (Flow.Publisher<ByteBuffer>) this.flowAdapter.fromPublisher(Flux.from(body).map(DataBuffer::asByteBuffer));
 			HttpRequest request = this.builder.method(this.httpMethod.name(), BodyPublisher.fromPublisher(publisher)).build();
-			this.response = Mono.fromFuture(this.httpClient.sendAsync(request, new PublishingBodyHandler())).map(r -> new JdkClientHttpResponse(r));
+			this.response = Mono.fromFuture(this.httpClient.sendAsync(request, new PublishingBodyHandler())).map(JdkClientHttpResponse::new);
 			return Mono.empty();
 		});
 	}
@@ -114,7 +113,7 @@ public class JdkClientHttpRequest extends AbstractClientHttpRequest {
 	public Mono<Void> setComplete() {
 		return doCommit(() -> {
 			HttpRequest request = this.builder.method(this.httpMethod.name(), BodyPublisher.noBody()).build();
-			this.response = Mono.fromFuture(httpClient.sendAsync(request, new PublishingBodyHandler())).map(r -> new JdkClientHttpResponse(r));
+			this.response = Mono.fromFuture(httpClient.sendAsync(request, new PublishingBodyHandler())).map(JdkClientHttpResponse::new);
 			return Mono.empty();
 		});
 	}
@@ -126,67 +125,48 @@ public class JdkClientHttpRequest extends AbstractClientHttpRequest {
 	static class PublishingBodyHandler implements HttpResponse.BodyHandler<Publisher<List<ByteBuffer>>> {
 		@Override
 		public HttpResponse.BodySubscriber<Publisher<List<ByteBuffer>>> apply(int statusCode, jdk.incubator.http.HttpHeaders responseHeaders) {
-			return new PublishingBodySubscriber();
+			return new EmitterProcessorBodySubscriber();
 		}
 	}
 
-	// TODO Could be included in JDK 11, see https://bugs.openjdk.java.net/browse/JDK-8201186
-	static class PublishingBodySubscriber implements HttpResponse.BodySubscriber<Publisher<List<ByteBuffer>>> {
-		private final CompletableFuture<Flow.Subscription> subscriptionCF = new CompletableFuture<>();
-		private final CompletableFuture<Flow.Subscriber<? super List<ByteBuffer>>> subscribedCF = new CompletableFuture<>();
-		private AtomicReference<Flow.Subscriber<? super List<ByteBuffer>>> subscriberRef = new AtomicReference<>();
-		private final CompletionStage<Flow.Publisher<List<ByteBuffer>>> body =
-				//subscriptionCF.thenCompose((s) -> CompletableFuture.completedStage(this::subscribe));
-				CompletableFuture.completedStage(this::subscribe);
+	// Could be included in JDK 11, see https://bugs.openjdk.java.net/browse/JDK-8201186
+	static class EmitterProcessorBodySubscriber implements HttpResponse.BodySubscriber<Publisher<List<ByteBuffer>>> {
 
-		private void subscribe(Flow.Subscriber<? super List<ByteBuffer>> subscriber) {
-			Objects.requireNonNull(subscriber, "subscriber must not be null");
-			if (subscriberRef.compareAndSet(null, subscriber)) {
-				subscriptionCF.thenAccept((s) -> {
-					subscriber.onSubscribe(s);
-					subscribedCF.complete(subscriber);
-				});
-			} else {
-				subscriber.onSubscribe(new Flow.Subscription() {
-					@Override public void request(long n) { }
-					@Override public void cancel() { }
-				});
-				subscriber.onError(new IOException("This publisher has already one subscriber"));
-			}
-		}
+		private final EmitterProcessor<List<ByteBuffer>> processor = EmitterProcessor.create();
 
 		@Override
 		public void onSubscribe(Flow.Subscription subscription) {
-			subscriptionCF.complete(subscription);
+			this.processor.onSubscribe(new Subscription() {
+				@Override
+				public void request(long n) {
+					subscription.request(n);
+				}
+
+				@Override
+				public void cancel() {
+					subscription.cancel();
+				}
+			});
 		}
 
 		@Override
 		public void onNext(List<ByteBuffer> item) {
-			assert subscriptionCF.isDone(); // cannot be called before onSubscribe()
-			Flow.Subscriber<? super List<ByteBuffer>> subscriber = subscriberRef.get();
-			assert subscriber != null; // cannot be called before subscriber calls request(1)
-			subscriber.onNext(item);
+			this.processor.onNext(item);
 		}
 
 		@Override
 		public void onError(Throwable throwable) {
-			assert subscriptionCF.isDone(); // cannot be called before onSubscribe()
-			// onError can be called before request(1), and therefore can
-			// be called before subscriberRef is set.
-			subscribedCF.thenAccept(s -> s.onError(throwable));
+			this.processor.onError(throwable);
 		}
 
 		@Override
 		public void onComplete() {
-			assert subscriptionCF.isDone(); // cannot be called before onSubscribe()
-			// onComplete can be called before request(1), and therefore can
-			// be called before subscriberRef is set.
-			subscribedCF.thenAccept(s -> s.onComplete());
+			this.processor.onComplete();
 		}
 
 		@Override
 		public CompletionStage<Publisher<List<ByteBuffer>>> getBody() {
-			return body.thenApply(JdkFlowAdapter::flowPublisherToFlux);
+			return CompletableFuture.completedStage(this.processor);
 		}
 	}
 

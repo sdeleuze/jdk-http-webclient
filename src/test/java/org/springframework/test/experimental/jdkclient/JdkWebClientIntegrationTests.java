@@ -3,15 +3,22 @@ package org.springframework.test.experimental.jdkclient;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.file.Files;
+import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
 import java.util.Arrays;
 import java.util.List;
 import java.util.function.Consumer;
 import java.util.zip.CRC32;
 
+import javax.net.ssl.SSLContext;
+
+import io.netty.handler.ssl.SslContext;
+import jdk.incubator.http.HttpClient;
+import okhttp3.Protocol;
 import okhttp3.mockwebserver.MockResponse;
 import okhttp3.mockwebserver.MockWebServer;
 import okhttp3.mockwebserver.RecordedRequest;
+import okhttp3.mockwebserver.internal.tls.SslClient;
 import org.hamcrest.CoreMatchers;
 import org.junit.After;
 import org.junit.Before;
@@ -34,7 +41,6 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.client.reactive.ClientHttpConnector;
-import org.springframework.http.client.reactive.ReactorClientHttpConnector;
 import org.springframework.web.reactive.function.client.ClientRequest;
 import org.springframework.web.reactive.function.client.ClientResponse;
 import org.springframework.web.reactive.function.client.ExchangeFilterFunction;
@@ -49,24 +55,30 @@ import static org.junit.Assert.assertTrue;
 @RunWith(Parameterized.class)
 public class JdkWebClientIntegrationTests {
 
+	private final SslClient sslClient = SslClient.localhost();
+
 	private MockWebServer server;
 
-	@Parameterized.Parameter(0)
-	public ClientHttpConnector connector;
+	private ClientHttpConnector connector;
 
-	@Parameterized.Parameters(name = "client [{0}]")
+	@Parameterized.Parameter(0)
+	public HttpClient.Version version;
+
+	@Parameterized.Parameters(name = "JDK HttpClient using {0}")
 	public static Object[][] arguments() {
 		return new Object[][] {
-				{new JdkClientHttpConnector()},
-				{new ReactorClientHttpConnector()}
+				{HttpClient.Version.HTTP_1_1},
+				{HttpClient.Version.HTTP_2}
 		};
 	}
 
 	private WebClient webClient;
 
 	@Before
-	public void setup() {
+	public void setup() throws NoSuchAlgorithmException {
+		this.connector = new JdkClientHttpConnector(HttpClient.newBuilder().version(version).sslContext(sslClient.sslContext).build());
 		this.server = new MockWebServer();
+		this.server.useHttps(sslClient.socketFactory, false);
 		this.webClient = WebClient
 				.builder()
 				.clientConnector(this.connector)
@@ -321,7 +333,6 @@ public class JdkWebClientIntegrationTests {
 		expectRequest(request -> {
 			assertEquals("/pojo/capitalize", request.getPath());
 			assertEquals("{\"foo\":\"foofoo\",\"bar\":\"barbar\"}", request.getBody().readUtf8());
-			assertEquals("chunked", request.getHeader(HttpHeaders.TRANSFER_ENCODING));
 			assertEquals("application/json", request.getHeader(HttpHeaders.ACCEPT));
 			assertEquals("application/json", request.getHeader(HttpHeaders.CONTENT_TYPE));
 		});

@@ -17,6 +17,18 @@ import org.springframework.http.client.reactive.ClientHttpResponse;
  */
 public class JdkClientHttpConnector implements ClientHttpConnector {
 
+	private final HttpClient httpClient;
+
+
+	public JdkClientHttpConnector() {
+		this.httpClient = HttpClient.newHttpClient();
+	}
+
+	public JdkClientHttpConnector(HttpClient httpClient) {
+		this.httpClient = httpClient;
+	}
+
+
 	@Override
 	public Mono<ClientHttpResponse> connect(HttpMethod method, URI uri, Function<? super ClientHttpRequest, Mono<Void>> requestCallback) {
 
@@ -24,7 +36,7 @@ public class JdkClientHttpConnector implements ClientHttpConnector {
 			return Mono.error(new IllegalArgumentException("URI is not absolute: " + uri));
 		}
 
-		JdkClientHttpRequest request = new JdkClientHttpRequest(method, uri);
+		JdkClientHttpRequest request = new JdkClientHttpRequest(this.httpClient, method, uri);
 		return requestCallback.apply(request).then(request.getResponse());
 	}
 }

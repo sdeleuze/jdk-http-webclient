@@ -64,7 +64,7 @@ public class JdkClientHttpResponse implements ClientHttpResponse {
 
 	@Override
 	public Flux<DataBuffer> getBody() {
-		return this.content.doOnSubscribe(s -> System.out.println("Toto"));
+		return this.content;
 	}
 
 	@Override
