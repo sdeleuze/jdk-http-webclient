@@ -1,19 +1,18 @@
 package org.springframework.experimental.jdkclient;
 
+import static java.net.http.HttpRequest.BodyPublishers;
+import static java.net.http.HttpRequest.Builder;
+import static java.net.http.HttpRequest.newBuilder;
+import static java.net.http.HttpResponse.BodyHandlers;
+
 import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
 import java.nio.ByteBuffer;
 import java.util.Collection;
-import java.util.List;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.CompletionStage;
 import java.util.concurrent.Flow;
 
-import jdk.incubator.http.HttpClient;
-import jdk.incubator.http.HttpRequest;
-import jdk.incubator.http.HttpResponse;
 import org.reactivestreams.Publisher;
-import org.reactivestreams.Subscription;
-import reactor.core.publisher.EmitterProcessor;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
@@ -28,10 +27,6 @@ import org.springframework.http.client.reactive.AbstractClientHttpRequest;
 import org.springframework.http.client.reactive.ClientHttpRequest;
 import org.springframework.http.client.reactive.ClientHttpResponse;
 import org.springframework.util.Assert;
-
-import static jdk.incubator.http.HttpRequest.BodyPublisher;
-import static jdk.incubator.http.HttpRequest.Builder;
-import static jdk.incubator.http.HttpRequest.newBuilder;
 
 /**
  * {@link ClientHttpRequest} implementation for the JDK 10 HTTP client.
@@ -98,8 +93,8 @@ public class JdkClientHttpRequest extends AbstractClientHttpRequest {
 	public Mono<Void> writeWith(Publisher<? extends DataBuffer> body) {
 		return doCommit(() -> {
 			Flow.Publisher<ByteBuffer> publisher = (Flow.Publisher<ByteBuffer>) this.flowAdapter.fromPublisher(Flux.from(body).map(DataBuffer::asByteBuffer));
-			HttpRequest request = this.builder.method(this.httpMethod.name(), BodyPublisher.fromPublisher(publisher)).build();
-			this.response = Mono.fromFuture(this.httpClient.sendAsync(request, new PublishingBodyHandler())).map(JdkClientHttpResponse::new);
+			HttpRequest request = this.builder.method(this.httpMethod.name(), BodyPublishers.fromPublisher(publisher)).build();
+			this.response = Mono.fromFuture(this.httpClient.sendAsync(request, BodyHandlers.ofPublisher())).map(JdkClientHttpResponse::new);
 			return Mono.empty();
 		});
 	}
@@ -112,62 +107,14 @@ public class JdkClientHttpRequest extends AbstractClientHttpRequest {
 	@Override
 	public Mono<Void> setComplete() {
 		return doCommit(() -> {
-			HttpRequest request = this.builder.method(this.httpMethod.name(), BodyPublisher.noBody()).build();
-			this.response = Mono.fromFuture(httpClient.sendAsync(request, new PublishingBodyHandler())).map(JdkClientHttpResponse::new);
+			HttpRequest request = this.builder.method(this.httpMethod.name(), BodyPublishers.noBody()).build();
+			this.response = Mono.fromFuture(httpClient.sendAsync(request, BodyHandlers.ofPublisher())).map(JdkClientHttpResponse::new);
 			return Mono.empty();
 		});
 	}
 
 	public Mono<ClientHttpResponse> getResponse() {
 		return this.response.log();
-	}
-
-	static class PublishingBodyHandler implements HttpResponse.BodyHandler<Publisher<List<ByteBuffer>>> {
-		@Override
-		public HttpResponse.BodySubscriber<Publisher<List<ByteBuffer>>> apply(int statusCode, jdk.incubator.http.HttpHeaders responseHeaders) {
-			return new EmitterProcessorBodySubscriber();
-		}
-	}
-
-	// Could be included in JDK 11, see https://bugs.openjdk.java.net/browse/JDK-8201186
-	static class EmitterProcessorBodySubscriber implements HttpResponse.BodySubscriber<Publisher<List<ByteBuffer>>> {
-
-		private final EmitterProcessor<List<ByteBuffer>> processor = EmitterProcessor.create();
-
-		@Override
-		public void onSubscribe(Flow.Subscription subscription) {
-			this.processor.onSubscribe(new Subscription() {
-				@Override
-				public void request(long n) {
-					subscription.request(n);
-				}
-
-				@Override
-				public void cancel() {
-					subscription.cancel();
-				}
-			});
-		}
-
-		@Override
-		public void onNext(List<ByteBuffer> item) {
-			this.processor.onNext(item);
-		}
-
-		@Override
-		public void onError(Throwable throwable) {
-			this.processor.onError(throwable);
-		}
-
-		@Override
-		public void onComplete() {
-			this.processor.onComplete();
-		}
-
-		@Override
-		public CompletionStage<Publisher<List<ByteBuffer>>> getBody() {
-			return CompletableFuture.completedStage(this.processor);
-		}
 	}
 
 }

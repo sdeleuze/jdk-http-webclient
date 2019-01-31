@@ -1,25 +1,26 @@
 package org.springframework.test.experimental.jdkclient;
 
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertThat;
+import static org.junit.Assert.assertTrue;
+
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.net.URI;
+import java.net.http.HttpClient;
 import java.nio.file.Files;
-import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
 import java.util.Arrays;
 import java.util.List;
 import java.util.function.Consumer;
 import java.util.zip.CRC32;
 
-import javax.net.ssl.SSLContext;
-
-import io.netty.handler.ssl.SslContext;
-import jdk.incubator.http.HttpClient;
-import okhttp3.Protocol;
 import okhttp3.mockwebserver.MockResponse;
 import okhttp3.mockwebserver.MockWebServer;
 import okhttp3.mockwebserver.RecordedRequest;
-import okhttp3.mockwebserver.internal.tls.SslClient;
-import org.hamcrest.CoreMatchers;
+import org.hamcrest.Matchers;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
@@ -37,6 +38,8 @@ import org.springframework.core.io.buffer.DataBufferUtils;
 import org.springframework.core.io.buffer.DefaultDataBufferFactory;
 import org.springframework.experimental.jdkclient.JdkClientHttpConnector;
 import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpMethod;
+import org.springframework.http.HttpRequest;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -44,18 +47,12 @@ import org.springframework.http.client.reactive.ClientHttpConnector;
 import org.springframework.web.reactive.function.client.ClientRequest;
 import org.springframework.web.reactive.function.client.ClientResponse;
 import org.springframework.web.reactive.function.client.ExchangeFilterFunction;
+import org.springframework.web.reactive.function.client.UnknownHttpStatusCodeException;
 import org.springframework.web.reactive.function.client.WebClient;
-import org.springframework.web.reactive.function.client.WebClientException;
 import org.springframework.web.reactive.function.client.WebClientResponseException;
-
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertThat;
-import static org.junit.Assert.assertTrue;
 
 @RunWith(Parameterized.class)
 public class JdkWebClientIntegrationTests {
-
-	private final SslClient sslClient = SslClient.localhost();
 
 	private MockWebServer server;
 
@@ -67,18 +64,16 @@ public class JdkWebClientIntegrationTests {
 	@Parameterized.Parameters(name = "JDK HttpClient using {0}")
 	public static Object[][] arguments() {
 		return new Object[][] {
-				{HttpClient.Version.HTTP_1_1},
-				{HttpClient.Version.HTTP_2}
+				{HttpClient.Version.HTTP_1_1}
 		};
 	}
 
 	private WebClient webClient;
 
 	@Before
-	public void setup() throws NoSuchAlgorithmException {
-		this.connector = new JdkClientHttpConnector(HttpClient.newBuilder().version(version).sslContext(sslClient.sslContext).build());
+	public void setup() {
+		this.connector = new JdkClientHttpConnector(HttpClient.newBuilder().version(version).build());
 		this.server = new MockWebServer();
-		this.server.useHttps(sslClient.socketFactory, false);
 		this.webClient = WebClient
 				.builder()
 				.clientConnector(this.connector)
@@ -92,7 +87,7 @@ public class JdkWebClientIntegrationTests {
 	}
 
 	@Test
-	public void shouldReceiveResponseHeaders() throws Exception {
+	public void shouldReceiveResponseHeaders() {
 		prepareResponse(response -> response
 				.setHeader("Content-Type", "text/plain")
 				.setBody("Hello Spring!"));
@@ -118,14 +113,14 @@ public class JdkWebClientIntegrationTests {
 	}
 
 	@Test
-	public void shouldReceivePlainText() throws Exception {
+	public void shouldReceivePlainText() {
 		prepareResponse(response -> response.setBody("Hello Spring!"));
 
 		Mono<String> result = this.webClient.get()
 				.uri("/greeting?name=Spring")
 				.header("X-Test-Header", "testvalue")
-				.exchange()
-				.flatMap(response -> response.bodyToMono(String.class));
+				.retrieve()
+				.bodyToMono(String.class);
 
 		StepVerifier.create(result)
 				.expectNext("Hello Spring!")
@@ -140,7 +135,29 @@ public class JdkWebClientIntegrationTests {
 	}
 
 	@Test
-	public void shouldReceiveJsonAsString() throws Exception {
+	public void shouldReceivePlainTextFlux() throws Exception {
+		prepareResponse(response -> response.setBody("Hello Spring!"));
+
+		Flux<String> result = this.webClient.get()
+				.uri("/greeting?name=Spring")
+				.header("X-Test-Header", "testvalue")
+				.exchange()
+				.flatMapMany(response -> response.bodyToFlux(String.class));
+
+		StepVerifier.create(result)
+				.expectNext("Hello Spring!")
+				.expectComplete().verify(Duration.ofSeconds(3));
+
+		expectRequestCount(1);
+		expectRequest(request -> {
+			assertEquals("testvalue", request.getHeader("X-Test-Header"));
+			assertEquals("*/*", request.getHeader(HttpHeaders.ACCEPT));
+			assertEquals("/greeting?name=Spring", request.getPath());
+		});
+	}
+
+	@Test
+	public void shouldReceiveJsonAsString() {
 		String content = "{\"bar\":\"barbar\",\"foo\":\"foofoo\"}";
 		prepareResponse(response -> response
 				.setHeader("Content-Type", "application/json").setBody(content));
@@ -161,20 +178,23 @@ public class JdkWebClientIntegrationTests {
 		});
 	}
 
-	@Test
-	public void shouldReceiveJsonAsTypeReferenceString() throws Exception {
-		String content = "{\"bar\":\"barbar\",\"foo\":\"foofoo\"}";
+	@Test  // SPR-16715
+	public void shouldReceiveJsonAsTypeReferenceString() {
+		String content = "{\"containerValue\":{\"fooValue\":\"bar\"}}";
 		prepareResponse(response -> response
 				.setHeader("Content-Type", "application/json").setBody(content));
 
-		Mono<String> result = this.webClient.get()
+		Mono<ValueContainer<Foo>> result = this.webClient.get()
 				.uri("/json").accept(MediaType.APPLICATION_JSON)
 				.retrieve()
-				.bodyToMono(new ParameterizedTypeReference<String>() {
-				});
+				.bodyToMono(new ParameterizedTypeReference<ValueContainer<Foo>>() {});
 
 		StepVerifier.create(result)
-				.expectNext(content)
+				.assertNext(valueContainer -> {
+					Foo foo = valueContainer.getContainerValue();
+					assertNotNull(foo);
+					assertEquals("bar", foo.getFooValue());
+				})
 				.expectComplete().verify(Duration.ofSeconds(3));
 
 		expectRequestCount(1);
@@ -185,7 +205,7 @@ public class JdkWebClientIntegrationTests {
 	}
 
 	@Test
-	public void shouldReceiveJsonAsResponseEntityString() throws Exception {
+	public void shouldReceiveJsonAsResponseEntityString() {
 		String content = "{\"bar\":\"barbar\",\"foo\":\"foofoo\"}";
 		prepareResponse(response -> response
 				.setHeader("Content-Type", "application/json").setBody(content));
@@ -212,7 +232,7 @@ public class JdkWebClientIntegrationTests {
 	}
 
 	@Test
-	public void shouldReceiveJsonAsResponseEntityList() throws Exception {
+	public void shouldReceiveJsonAsResponseEntityList() {
 		String content = "[{\"bar\":\"bar1\",\"foo\":\"foo1\"}, {\"bar\":\"bar2\",\"foo\":\"foo2\"}]";
 		prepareResponse(response -> response
 				.setHeader("Content-Type", "application/json").setBody(content));
@@ -241,7 +261,7 @@ public class JdkWebClientIntegrationTests {
 	}
 
 	@Test
-	public void shouldReceiveJsonAsFluxString() throws Exception {
+	public void shouldReceiveJsonAsFluxString() {
 		String content = "{\"bar\":\"barbar\",\"foo\":\"foofoo\"}";
 		prepareResponse(response -> response
 				.setHeader("Content-Type", "application/json").setBody(content));
@@ -263,7 +283,7 @@ public class JdkWebClientIntegrationTests {
 	}
 
 	@Test
-	public void shouldReceiveJsonAsPojo() throws Exception {
+	public void shouldReceiveJsonAsPojo() {
 		prepareResponse(response -> response
 				.setHeader("Content-Type", "application/json")
 				.setBody("{\"bar\":\"barbar\",\"foo\":\"foofoo\"}"));
@@ -271,8 +291,8 @@ public class JdkWebClientIntegrationTests {
 		Mono<Pojo> result = this.webClient.get()
 				.uri("/pojo")
 				.accept(MediaType.APPLICATION_JSON)
-				.exchange()
-				.flatMap(response -> response.bodyToMono(Pojo.class));
+				.retrieve()
+				.bodyToMono(Pojo.class);
 
 		StepVerifier.create(result)
 				.consumeNextWith(p -> assertEquals("barbar", p.getBar()))
@@ -287,7 +307,7 @@ public class JdkWebClientIntegrationTests {
 	}
 
 	@Test
-	public void shouldReceiveJsonAsFluxPojo() throws Exception {
+	public void shouldReceiveJsonAsFluxPojo() {
 		prepareResponse(response -> response
 				.setHeader("Content-Type", "application/json")
 				.setBody("[{\"bar\":\"bar1\",\"foo\":\"foo1\"},{\"bar\":\"bar2\",\"foo\":\"foo2\"}]"));
@@ -295,12 +315,12 @@ public class JdkWebClientIntegrationTests {
 		Flux<Pojo> result = this.webClient.get()
 				.uri("/pojos")
 				.accept(MediaType.APPLICATION_JSON)
-				.exchange()
-				.flatMapMany(response -> response.bodyToFlux(Pojo.class));
+				.retrieve()
+				.bodyToFlux(Pojo.class);
 
 		StepVerifier.create(result)
-				.consumeNextWith(p -> assertThat(p.getBar(), CoreMatchers.is("bar1")))
-				.consumeNextWith(p -> assertThat(p.getBar(), CoreMatchers.is("bar2")))
+				.consumeNextWith(p -> assertThat(p.getBar(), Matchers.is("bar1")))
+				.consumeNextWith(p -> assertThat(p.getBar(), Matchers.is("bar2")))
 				.expectComplete()
 				.verify(Duration.ofSeconds(3));
 
@@ -312,7 +332,7 @@ public class JdkWebClientIntegrationTests {
 	}
 
 	@Test
-	public void shouldSendPojoAsJson() throws Exception {
+	public void shouldSendPojoAsJson() {
 		prepareResponse(response -> response.setHeader("Content-Type", "application/json")
 				.setBody("{\"bar\":\"BARBAR\",\"foo\":\"FOOFOO\"}"));
 
@@ -321,8 +341,8 @@ public class JdkWebClientIntegrationTests {
 				.accept(MediaType.APPLICATION_JSON)
 				.contentType(MediaType.APPLICATION_JSON)
 				.syncBody(new Pojo("foofoo", "barbar"))
-				.exchange()
-				.flatMap(response -> response.bodyToMono(Pojo.class));
+				.retrieve()
+				.bodyToMono(Pojo.class);
 
 		StepVerifier.create(result)
 				.consumeNextWith(p -> assertEquals("BARBAR", p.getBar()))
@@ -333,21 +353,22 @@ public class JdkWebClientIntegrationTests {
 		expectRequest(request -> {
 			assertEquals("/pojo/capitalize", request.getPath());
 			assertEquals("{\"foo\":\"foofoo\",\"bar\":\"barbar\"}", request.getBody().readUtf8());
+			assertEquals("31", request.getHeader(HttpHeaders.CONTENT_LENGTH));
 			assertEquals("application/json", request.getHeader(HttpHeaders.ACCEPT));
 			assertEquals("application/json", request.getHeader(HttpHeaders.CONTENT_TYPE));
 		});
 	}
 
 	@Test
-	public void shouldSendCookies() throws Exception {
+	public void shouldSendCookies() {
 		prepareResponse(response -> response
 				.setHeader("Content-Type", "text/plain").setBody("test"));
 
 		Mono<String> result = this.webClient.get()
 				.uri("/test")
 				.cookie("testkey", "testvalue")
-				.exchange()
-				.flatMap(response -> response.bodyToMono(String.class));
+				.retrieve()
+				.bodyToMono(String.class);
 
 		StepVerifier.create(result)
 				.expectNext("test")
@@ -361,8 +382,8 @@ public class JdkWebClientIntegrationTests {
 		});
 	}
 
-	@Test // SPR-16246
-	public void shouldSendLargeTextFile() throws Exception {
+	@Test  // SPR-16246
+	public void shouldSendLargeTextFile() throws IOException {
 		prepareResponse(response -> {});
 
 		Resource resource = new ClassPathResource("largeTextFile.txt", getClass());
@@ -396,7 +417,7 @@ public class JdkWebClientIntegrationTests {
 	}
 
 	@Test
-	public void shouldReceive404Response() throws Exception {
+	public void shouldReceive404Response() {
 		prepareResponse(response -> response.setResponseCode(404)
 				.setHeader("Content-Type", "text/plain").setBody("Not Found"));
 
@@ -415,7 +436,7 @@ public class JdkWebClientIntegrationTests {
 	}
 
 	@Test
-	public void shouldGetErrorSignalOn404() throws Exception {
+	public void shouldGetErrorSignalOn404() {
 		prepareResponse(response -> response.setResponseCode(404)
 				.setHeader("Content-Type", "text/plain").setBody("Not Found"));
 
@@ -425,7 +446,7 @@ public class JdkWebClientIntegrationTests {
 				.bodyToMono(String.class);
 
 		StepVerifier.create(result)
-				.expectError(WebClientException.class)
+				.expectError(WebClientResponseException.class)
 				.verify(Duration.ofSeconds(3));
 
 		expectRequestCount(1);
@@ -435,8 +456,8 @@ public class JdkWebClientIntegrationTests {
 		});
 	}
 
-	@Test // SPR-15946
-	public void shouldGetErrorSignalOnEmptyErrorResponse() throws Exception {
+	@Test  // SPR-15946
+	public void shouldGetErrorSignalOnEmptyErrorResponse() {
 		prepareResponse(response -> response.setResponseCode(404)
 				.setHeader("Content-Type", "text/plain"));
 
@@ -445,7 +466,7 @@ public class JdkWebClientIntegrationTests {
 				.bodyToMono(String.class);
 
 		StepVerifier.create(result)
-				.expectError(WebClientException.class)
+				.expectError(WebClientResponseException.class)
 				.verify(Duration.ofSeconds(3));
 
 		expectRequestCount(1);
@@ -456,13 +477,14 @@ public class JdkWebClientIntegrationTests {
 	}
 
 	@Test
-	public void shouldGetInternalServerErrorSignal() throws Exception {
+	public void shouldGetInternalServerErrorSignal() {
 		String errorMessage = "Internal Server error";
 		prepareResponse(response -> response.setResponseCode(500)
 				.setHeader("Content-Type", "text/plain").setBody(errorMessage));
 
+		String path = "/greeting?name=Spring";
 		Mono<String> result = this.webClient.get()
-				.uri("/greeting?name=Spring")
+				.uri(path)
 				.retrieve()
 				.bodyToMono(String.class);
 
@@ -471,6 +493,70 @@ public class JdkWebClientIntegrationTests {
 					assertTrue(throwable instanceof WebClientResponseException);
 					WebClientResponseException ex = (WebClientResponseException) throwable;
 					assertEquals(HttpStatus.INTERNAL_SERVER_ERROR, ex.getStatusCode());
+					assertEquals(HttpStatus.INTERNAL_SERVER_ERROR.value(), ex.getRawStatusCode());
+					assertEquals(HttpStatus.INTERNAL_SERVER_ERROR.getReasonPhrase(),
+							ex.getStatusText());
+					assertEquals(MediaType.TEXT_PLAIN, ex.getHeaders().getContentType());
+					assertEquals(errorMessage, ex.getResponseBodyAsString());
+
+					HttpRequest request = ex.getRequest();
+					assertEquals(HttpMethod.GET, request.getMethod());
+					assertEquals(URI.create(this.server.url(path).toString()), request.getURI());
+					assertNotNull(request.getHeaders());
+				})
+				.verify(Duration.ofSeconds(3));
+
+		expectRequestCount(1);
+		expectRequest(request -> {
+			assertEquals("*/*", request.getHeader(HttpHeaders.ACCEPT));
+			assertEquals(path, request.getPath());
+		});
+	}
+
+	@Test
+	public void shouldSupportUnknownStatusCode() {
+		int errorStatus = 555;
+		assertNull(HttpStatus.resolve(errorStatus));
+		String errorMessage = "Something went wrong";
+		prepareResponse(response -> response.setResponseCode(errorStatus)
+				.setHeader("Content-Type", "text/plain").setBody(errorMessage));
+
+		Mono<ClientResponse> result = this.webClient.get()
+				.uri("/unknownPage")
+				.exchange();
+
+		StepVerifier.create(result)
+				.consumeNextWith(response -> assertEquals(555, response.rawStatusCode()))
+				.expectComplete()
+				.verify(Duration.ofSeconds(3));
+
+		expectRequestCount(1);
+		expectRequest(request -> {
+			assertEquals("*/*", request.getHeader(HttpHeaders.ACCEPT));
+			assertEquals("/unknownPage", request.getPath());
+		});
+	}
+
+	@Test
+	public void shouldGetErrorSignalWhenRetrievingUnknownStatusCode() {
+		int errorStatus = 555;
+		assertNull(HttpStatus.resolve(errorStatus));
+		String errorMessage = "Something went wrong";
+		prepareResponse(response -> response.setResponseCode(errorStatus)
+				.setHeader("Content-Type", "text/plain").setBody(errorMessage));
+
+		Mono<String> result = this.webClient.get()
+				.uri("/unknownPage")
+				.retrieve()
+				.bodyToMono(String.class);
+
+		StepVerifier.create(result)
+				.expectErrorSatisfies(throwable -> {
+					assertTrue(throwable instanceof UnknownHttpStatusCodeException);
+					UnknownHttpStatusCodeException ex = (UnknownHttpStatusCodeException) throwable;
+					assertEquals("Unknown status code ["+errorStatus+"]", ex.getMessage());
+					assertEquals(errorStatus, ex.getRawStatusCode());
+					assertEquals("", ex.getStatusText());
 					assertEquals(MediaType.TEXT_PLAIN, ex.getHeaders().getContentType());
 					assertEquals(errorMessage, ex.getResponseBodyAsString());
 				})
@@ -479,12 +565,12 @@ public class JdkWebClientIntegrationTests {
 		expectRequestCount(1);
 		expectRequest(request -> {
 			assertEquals("*/*", request.getHeader(HttpHeaders.ACCEPT));
-			assertEquals("/greeting?name=Spring", request.getPath());
+			assertEquals("/unknownPage", request.getPath());
 		});
 	}
 
 	@Test
-	public void shouldApplyCustomStatusHandler() throws Exception {
+	public void shouldApplyCustomStatusHandler() {
 		prepareResponse(response -> response.setResponseCode(500)
 				.setHeader("Content-Type", "text/plain").setBody("Internal Server error"));
 
@@ -506,7 +592,7 @@ public class JdkWebClientIntegrationTests {
 	}
 
 	@Test
-	public void shouldApplyCustomStatusHandlerParameterizedTypeReference() throws Exception {
+	public void shouldApplyCustomStatusHandlerParameterizedTypeReference() {
 		prepareResponse(response -> response.setResponseCode(500)
 				.setHeader("Content-Type", "text/plain").setBody("Internal Server error"));
 
@@ -528,7 +614,7 @@ public class JdkWebClientIntegrationTests {
 	}
 
 	@Test
-	public void shouldReceiveNotFoundEntity() throws Exception {
+	public void shouldReceiveNotFoundEntity() {
 		prepareResponse(response -> response.setResponseCode(404)
 				.setHeader("Content-Type", "text/plain").setBody("Not Found"));
 
@@ -550,7 +636,7 @@ public class JdkWebClientIntegrationTests {
 	}
 
 	@Test
-	public void shouldApplyExchangeFilter() throws Exception {
+	public void shouldApplyExchangeFilter() {
 		prepareResponse(response -> response.setHeader("Content-Type", "text/plain")
 				.setBody("Hello Spring!"));
 
@@ -577,7 +663,7 @@ public class JdkWebClientIntegrationTests {
 	}
 
 	@Test
-	public void shouldApplyErrorHandlingFilter() throws Exception {
+	public void shouldApplyErrorHandlingFilter() {
 
 		ExchangeFilterFunction filter = ExchangeFilterFunction.ofResponseProcessor(
 				clientResponse -> {
@@ -620,7 +706,7 @@ public class JdkWebClientIntegrationTests {
 	}
 
 	@Test
-	public void shouldReceiveEmptyResponse() throws Exception {
+	public void shouldReceiveEmptyResponse() {
 		prepareResponse(response -> response.setHeader("Content-Length", "0").setBody(""));
 
 		Mono<ResponseEntity<Void>> result = this.webClient.get()
@@ -633,21 +719,16 @@ public class JdkWebClientIntegrationTests {
 		}).verifyComplete();
 	}
 
-	@Test // SPR-15782
-	public void shouldFailWithRelativeUrls() throws Exception {
+	@Test  // SPR-15782
+	public void shouldFailWithRelativeUrls() {
 		String uri = "/api/v4/groups/1";
-		Mono<ClientResponse> responseMono =  WebClient
-				.builder()
-				.clientConnector(new JdkClientHttpConnector())
-				.build()
-				.get()
-				.uri(uri)
-				.exchange();
+		Mono<ClientResponse> responseMono = WebClient.builder().build().get().uri(uri).exchange();
 
 		StepVerifier.create(responseMono)
 				.expectErrorMessage("URI is not absolute: " + uri)
 				.verify(Duration.ofSeconds(5));
 	}
+
 
 	private void prepareResponse(Consumer<MockResponse> consumer) {
 		MockResponse response = new MockResponse();
@@ -655,8 +736,13 @@ public class JdkWebClientIntegrationTests {
 		this.server.enqueue(response);
 	}
 
-	private void expectRequest(Consumer<RecordedRequest> consumer) throws InterruptedException {
-		consumer.accept(this.server.takeRequest());
+	private void expectRequest(Consumer<RecordedRequest> consumer) {
+		try {
+			consumer.accept(this.server.takeRequest());
+		}
+		catch (InterruptedException ex) {
+			throw new IllegalStateException(ex);
+		}
 	}
 
 	private void expectRequestCount(int count) {
@@ -669,6 +755,35 @@ public class JdkWebClientIntegrationTests {
 
 		MyException(String message) {
 			super(message);
+		}
+	}
+
+
+	static class ValueContainer<T> {
+
+		private T containerValue;
+
+
+		public T getContainerValue() {
+			return containerValue;
+		}
+
+		public void setContainerValue(T containerValue) {
+			this.containerValue = containerValue;
+		}
+	}
+
+
+	static class Foo {
+
+		private String fooValue;
+
+		public String getFooValue() {
+			return fooValue;
+		}
+
+		public void setFooValue(String fooValue) {
+			this.fooValue = fooValue;
 		}
 	}
 

@@ -3,12 +3,14 @@ package org.springframework.experimental.jdkclient;
 import java.nio.ByteBuffer;
 import java.util.List;
 
-import jdk.incubator.http.HttpClient;
-import jdk.incubator.http.HttpResponse;
-import org.reactivestreams.Publisher;
-import reactor.core.publisher.Flux;
-import reactor.core.publisher.Mono;
+import java.net.http.HttpClient;
+import java.net.http.HttpResponse;
+import java.util.concurrent.Flow;
 
+import reactor.core.publisher.Flux;
+
+import org.springframework.core.ReactiveAdapter;
+import org.springframework.core.ReactiveAdapterRegistry;
 import org.springframework.core.io.buffer.DataBuffer;
 import org.springframework.core.io.buffer.DataBufferFactory;
 import org.springframework.core.io.buffer.DefaultDataBufferFactory;
@@ -29,21 +31,28 @@ import org.springframework.util.MultiValueMap;
  */
 public class JdkClientHttpResponse implements ClientHttpResponse {
 
-	private final HttpResponse<Publisher<List<ByteBuffer>>> httpResponse;
+	private final HttpResponse<Flow.Publisher<List<ByteBuffer>>> httpResponse;
+
+	private final ReactiveAdapter flowAdapter = ReactiveAdapterRegistry.getSharedInstance().getAdapter(Flow.Publisher.class);
 
 	private final Flux<DataBuffer> content;
 
 	private final DataBufferFactory factory = new DefaultDataBufferFactory();
 
-	public JdkClientHttpResponse(HttpResponse<Publisher<List<ByteBuffer>>> httpResponse) {
+	public JdkClientHttpResponse(HttpResponse<Flow.Publisher<List<ByteBuffer>>> httpResponse) {
 		Assert.notNull(httpResponse, "HttpResponse should not be null");
 		this.httpResponse = httpResponse;
-		this.content = Flux.from(httpResponse.body()).flatMap(list -> Flux.fromIterable(list)).map(this.factory::wrap);
+		this.content = Flux.<List<ByteBuffer>>from(flowAdapter.toPublisher(httpResponse.body())).flatMap(Flux::fromIterable).map(this.factory::wrap);
 	}
 
 	@Override
 	public HttpStatus getStatusCode() {
 		return HttpStatus.valueOf(this.httpResponse.statusCode());
+	}
+
+	@Override
+	public int getRawStatusCode() {
+		return this.httpResponse.statusCode();
 	}
 
 	@Override

@@ -3,39 +3,23 @@ version '1.0-SNAPSHOT'
 
 apply plugin: 'java'
 
-sourceCompatibility = 10
-targetCompatibility = 10
-
-compileJava {
-	inputs.property("moduleName", "org.springframework.experimental.jdkclient")
-	doFirst {
-		options.compilerArgs = [
-				'--module-path', classpath.asPath
-		]
-		classpath = files()
-	}
-}
-
-test {
-	doFirst {
-		jvmArgs = [
-				'--add-modules', 'jdk.incubator.httpclient'
-		]
-	}
-}
+sourceCompatibility = 11
+targetCompatibility = 11
 
 repositories {
     mavenCentral()
 }
 
 dependencies {
-    compile("org.springframework:spring-webflux:5.0.4.RELEASE")
-	compile("org.springframework:spring-context:5.0.4.RELEASE")
-	compile("org.springframework:spring-test:5.0.4.RELEASE")
-    compile("io.projectreactor:reactor-core:3.1.5.RELEASE")
-    testCompile("io.projectreactor:reactor-test:3.1.5.RELEASE")
-	testCompile("io.projectreactor.ipc:reactor-netty:0.7.5.RELEASE")
-    testCompile("com.squareup.okhttp3:mockwebserver:3.10.0")
+    compile("org.springframework:spring-webflux:5.1.4.RELEASE")
+    compile("org.springframework:spring-context:5.1.4.RELEASE")
+    compile("org.springframework:spring-test:5.1.4.RELEASE")
+    compile("io.projectreactor:reactor-core:3.2.5.RELEASE")
+    testCompile("io.projectreactor:reactor-test:3.2.5.RELEASE")
+    testCompile("io.projectreactor.netty:reactor-netty:0.8.4.RELEASE")
+    testCompile("com.squareup.okhttp3:mockwebserver:3.12.1")
+    testCompile("com.squareup.okhttp3:okhttp-tls:3.12.1")
     testCompile("junit:junit:4.12")
-	testCompile("com.fasterxml.jackson.core:jackson-databind:2.9.4")
+    testCompile("com.fasterxml.jackson.core:jackson-databind:2.9.4")
+    testCompile("org.hamcrest:hamcrest-all:1.3")
 }
